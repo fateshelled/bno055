@@ -39,8 +39,9 @@ from geometry_msgs.msg import Quaternion, Vector3
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import Imu, MagneticField, Temperature
-from std_msgs.msg import String
+from std_msgs.msg import String, Header, Float64
 from example_interfaces.srv import Trigger
+from scipy.spatial.transform import Rotation as R
 
 
 class SensorService:
@@ -61,6 +62,9 @@ class SensorService:
         self.pub_grav = node.create_publisher(Vector3, prefix + 'grav', QoSProf)
         self.pub_temp = node.create_publisher(Temperature, prefix + 'temp', QoSProf)
         self.pub_calib_status = node.create_publisher(String, prefix + 'calib_status', QoSProf)
+        self.pub_roll = node.create_publisher(Float64, prefix + 'roll', QoSProf)
+        self.pub_pitch = node.create_publisher(Float64, prefix + 'pitch', QoSProf)
+        self.pub_yaw = node.create_publisher(Float64, prefix + 'yaw', QoSProf)
         self.srv = self.node.create_service(Trigger, prefix + 'calibration_request', self.calibration_request_callback)
 
     def configure(self):
@@ -140,19 +144,21 @@ class SensorService:
     def get_sensor_data(self):
         """Read IMU data from the sensor, parse and publish."""
         # Initialize ROS msgs
+        header = Header()
         imu_raw_msg = Imu()
         imu_msg = Imu()
         mag_msg = MagneticField()
         grav_msg = Vector3()
         temp_msg = Temperature()
+        rpy_msg = Float64()
+
+        header.stamp = self.node.get_clock().now().to_msg()
+        header.frame_id = self.param.frame_id.value
 
         # read from sensor
         buf = self.con.receive(registers.BNO055_ACCEL_DATA_X_LSB_ADDR, 45)
         # Publish raw data
-        imu_raw_msg.header.stamp = self.node.get_clock().now().to_msg()
-        imu_raw_msg.header.frame_id = self.param.frame_id.value
-        # TODO: do headers need sequence counters now?
-        # imu_raw_msg.header.seq = seq
+        imu_raw_msg.header = header
 
         # TODO: make this an option to publish?
         imu_raw_msg.orientation_covariance = [
@@ -188,11 +194,9 @@ class SensorService:
 
         # TODO: make this an option to publish?
         # Publish filtered data
-        imu_msg.header.stamp = self.node.get_clock().now().to_msg()
-        imu_msg.header.frame_id = self.param.frame_id.value
+        imu_msg.header = header
 
         q = Quaternion()
-        # imu_msg.header.seq = seq
         q.w = self.unpackBytesToFloat(buf[24], buf[25])
         q.x = self.unpackBytesToFloat(buf[26], buf[27])
         q.y = self.unpackBytesToFloat(buf[28], buf[29])
@@ -224,9 +228,7 @@ class SensorService:
         self.pub_imu.publish(imu_msg)
 
         # Publish magnetometer data
-        mag_msg.header.stamp = self.node.get_clock().now().to_msg()
-        mag_msg.header.frame_id = self.param.frame_id.value
-        # mag_msg.header.seq = seq
+        mag_msg.header = header
         mag_msg.magnetic_field.x = \
             self.unpackBytesToFloat(buf[6], buf[7]) / self.param.mag_factor.value
         mag_msg.magnetic_field.y = \
@@ -249,11 +251,19 @@ class SensorService:
         self.pub_grav.publish(grav_msg)
 
         # Publish temperature
-        temp_msg.header.stamp = self.node.get_clock().now().to_msg()
-        temp_msg.header.frame_id = self.param.frame_id.value
-        # temp_msg.header.seq = seq
+        temp_msg.header = header
         temp_msg.temperature = float(buf[44])
         self.pub_temp.publish(temp_msg)
+
+        quat = [imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z, imu_msg.orientation.w]
+        rpy = R(quat).as_euler(seq="xyz", degrees=True)
+        rpy_msg.data = float(rpy[0])
+        self.pub_roll.publish(rpy_msg)
+        rpy_msg.data = float(rpy[1])
+        self.pub_pitch.publish(rpy_msg)
+        rpy_msg.data = float(rpy[2])
+        self.pub_yaw.publish(rpy_msg)
+
 
     def get_calib_status(self):
         """
